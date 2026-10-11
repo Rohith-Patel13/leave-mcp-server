@@ -3,7 +3,7 @@
 A beginner MCP (Model Context Protocol) server for HR leave management, plus my revision notes on MCP for interviews.
 
 - **Use case:** An HR manager asks an AI assistant in plain English, "How many leaves are left for E001?", and the assistant answers from the company's employee data.
-- **Server:** Python + `FastMCP` (official MCP Python SDK), managed with `uv`
+- **Server:** Python + `MCPServer` (official MCP Python SDK v2; called `FastMCP` in v1), managed with `uv`
 - **Client:** Claude Desktop
 - **Tools:** 1 (`get_leave_balance`)
 
@@ -96,7 +96,7 @@ Plug shape  = MCP protocol
 - So **one server works with many clients**, and **one client works with many servers**
 - Main benefit: **reusability**. Write the tool once and use it everywhere.
 
-I never hand-write this JSON. The SDK (`FastMCP`) generates it from my function signature and docstring.
+I never hand-write this JSON. The SDK (`MCPServer`, formerly `FastMCP`) generates it from my function signature and docstring.
 
 ---
 
@@ -130,7 +130,7 @@ I never hand-write this JSON. The SDK (`FastMCP`) generates it from my function 
 | Who writes it | Whoever owns the data (me, GitHub, Slack…) | The AI app maker (Anthropic, Cursor…), or me for my own app |
 | Job | "Here are my tools. Call them and I'll do the work." | "What tools do you have? The LLM wants this one, here are the args." |
 | Knows about the LLM? | **No.** It only receives a `tools/call` request. | **Yes.** It sits between the LLM and the servers. |
-| In this project | `main.py` | Claude Desktop |
+| In this project | `src/main.py` | Claude Desktop |
 
 **Host** = the full app the user sees (Claude Desktop). It contains the LLM and one MCP client per connected server.
 
@@ -320,7 +320,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const client = new Client({ name: "atl-hr-bot", version: "1.0.0" });
 await client.connect(
-  new StdioClientTransport({ command: "uv", args: ["run", "main.py"] })
+  new StdioClientTransport({ command: "uv", args: ["run", "src/main.py"] })
 );
 
 const { tools } = await client.listTools();      // give these to Gemini as functionDeclarations
@@ -375,14 +375,14 @@ Claude Desktop doesn't know my server exists. Someone must tell it **"there's a 
 That information lives in Claude Desktop's config:
 `%APPDATA%\Claude\claude_desktop_config.json`
 
-`uv run mcp install main.py` **just writes this entry for me**:
+`uv run mcp install src/main.py` **just writes this entry for me**:
 
 ```json
 {
   "mcpServers": {
     "LeaveManager": {
       "command": "uv",
-      "args": ["run", "--with", "mcp[cli]", "mcp", "run", "D:\\Rohith\\Project\\leave-mcp-server\\main.py"]
+      "args": ["run", "--with", "mcp[cli]", "mcp", "run", "D:\\Rohith\\Project\\leave-mcp-server\\src\\main.py"]
     }
   }
 }
@@ -419,7 +419,7 @@ uv init leave-mcp-server
 cd leave-mcp-server
 ```
 
-> Note: this repo was created with the packaged layout (`src/leave_mcp_server/__init__.py`). For a simple MCP server, I just create **`main.py` in the project root** and ignore `src/`.
+> Note: this repo was first created with `uv init --package` (layout `src/leave_mcp_server/__init__.py`, plus `[project.scripts]` and `[build-system]` in `pyproject.toml`). I removed the package folder **and those two blocks**. Otherwise `uv add` fails with `Expected a Python module at: src\leave_mcp_server\__init__.py`. My server file is now just `src/main.py`.
 
 ### Step 2: Add the MCP SDK
 
@@ -429,10 +429,16 @@ uv add "mcp[cli]"
 
 This updates `pyproject.toml` → `dependencies` and creates `.venv/` and `uv.lock`.
 
-### Step 3: Create `main.py` (project root)
+### Step 3: Create `src/main.py`
+
+> **SDK version matters.** `uv add "mcp[cli]"` installed **mcp 2.x**. In v2, `FastMCP` was **renamed to `MCPServer`**:
+> - v1 (most tutorials and the video): `from mcp.server.fastmcp import FastMCP`
+> - v2 (installed here): `from mcp.server.mcpserver import MCPServer`
+>
+> Using the v1 import on v2 gives `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Either use the v2 import (below) or pin `uv add "mcp[cli]<2"` to follow v1 tutorials as written.
 
 ```python
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # Mock database (in real life: a DB or REST API call)
 employee_leaves = {
@@ -441,7 +447,7 @@ employee_leaves = {
 }
 
 # Create the MCP server
-mcp = FastMCP("LeaveManager")
+mcp = MCPServer("LeaveManager")
 
 
 @mcp.tool()
@@ -463,7 +469,7 @@ if __name__ == "__main__":
 
 What each part does:
 
-- `FastMCP("LeaveManager")` creates the server.
+- `MCPServer("LeaveManager")` creates the server (it was called `FastMCP` in v1).
 - `@mcp.tool()` registers the function, so it appears in `tools/list`.
 - Type hints (`employee_id: str`) become the tool's `inputSchema`.
 - The docstring becomes the tool's `description`, which the LLM reads.
@@ -472,7 +478,7 @@ What each part does:
 ### Step 4: Test without Claude (MCP Inspector)
 
 ```bash
-uv run mcp dev main.py
+uv run mcp dev src/main.py
 ```
 
 This opens the Inspector in the browser (it needs Node). Click **Connect** → **Tools** → **List Tools** → `get_leave_balance` → enter `E001` → **Run**. Expect "E001 has 18 leave days remaining."
@@ -481,7 +487,7 @@ It's like Postman for MCP. Press Ctrl+C to stop.
 ### Step 5: Register with Claude Desktop
 
 ```bash
-uv run mcp install main.py
+uv run mcp install src/main.py
 ```
 
 ### Step 6: Restart Claude Desktop fully
@@ -503,7 +509,7 @@ Claude asks permission. Click **Allow**, and the answer is 18 days.
 |---|---|
 | Server shows "failed" in Settings → Developer | Check the log: `%APPDATA%\Claude\logs\mcp-server-LeaveManager.log` |
 | `spawn uv ENOENT` | Claude can't find uv. Run `where uv` and put the full path (e.g. `C:\\Users\\rohit\\.local\\bin\\uv.exe`) as `"command"` in the config |
-| `typer` / `TypeError` on install | `uv add --upgrade typer`, then rerun `uv run mcp install main.py` |
+| `typer` / `TypeError` on install | `uv add --upgrade typer`, then rerun `uv run mcp install src/main.py` |
 | Tool not showing | Fully quit Claude from the tray and reopen |
 | `print()` breaks the server | With stdio, stdout is the protocol channel. Never `print()` in the server; log to stderr instead (`print(..., file=sys.stderr)`) |
 
@@ -552,7 +558,7 @@ Untrusted servers run code on your machine; prompt injection through tool output
 **Q: What is uv?**
 A fast Rust-based Python package and project manager by Astral, like npm for Python. `pyproject.toml` ≈ `package.json`, `uv.lock` ≈ `package-lock.json`, `.venv` ≈ `node_modules`.
 
-**Q: What does `uv run mcp install main.py` do?**
+**Q: What does `uv run mcp install src/main.py` do?**
 It adds the server's start command to `claude_desktop_config.json`, so Claude Desktop launches the server (stdio) on startup and discovers its tools.
 
 **Q: Can multiple clients use one MCP server?**
